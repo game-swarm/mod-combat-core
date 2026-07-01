@@ -1,54 +1,8 @@
 use bevy::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-pub type PlayerId = u32;
-
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RoomId(pub u32);
-
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Position {
-    pub x: i32,
-    pub y: i32,
-    pub room: RoomId,
-}
-
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Owner(pub PlayerId);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum BodyPart {
-    Attack,
-    RangedAttack,
-    Heal,
-    Tough,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum DamageType {
-    Kinetic,
-    Thermal,
-    Emp,
-    Sonic,
-    Corrosive,
-    Psionic,
-}
-
-#[derive(Component, Debug, Clone)]
-pub struct Drone {
-    pub owner: PlayerId,
-    pub body: Vec<BodyPart>,
-    pub hits: u32,
-    pub hits_max: u32,
-    pub fatigue: u32,
-}
-
-#[derive(Component, Debug, Clone)]
-pub struct Structure {
-    pub owner: Option<PlayerId>,
-    pub hits: u32,
-    pub hits_max: u32,
-}
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use swarm_engine::components::{
+    BodyPart, DamageType, DeathMark, Drone, Owner, PlayerId, Position, Structure,
+};
 
 #[derive(Component, Debug, Clone)]
 pub struct Tower {
@@ -56,9 +10,6 @@ pub struct Tower {
     pub damage: u32,
     pub damage_type: DamageType,
 }
-
-#[derive(Component, Debug, Clone, Copy, Default)]
-pub struct DeathMarker;
 
 #[derive(Resource, Debug, Clone)]
 pub struct CombatConfig {
@@ -84,8 +35,8 @@ pub struct ActionRegistry {
 
 #[derive(Resource, Debug, Clone, Default)]
 pub struct CombatRegistry {
-    pub damage_types: BTreeSet<DamageType>,
-    pub body_parts: BTreeSet<BodyPart>,
+    pub damage_types: HashSet<DamageType>,
+    pub body_parts: HashSet<BodyPart>,
 }
 
 #[derive(Resource, Debug, Clone, Default)]
@@ -216,7 +167,7 @@ pub fn register_combat_core(
     registry.damage_types.extend([
         DamageType::Kinetic,
         DamageType::Thermal,
-        DamageType::Emp,
+        DamageType::EMP,
         DamageType::Sonic,
         DamageType::Corrosive,
         DamageType::Psionic,
@@ -232,7 +183,13 @@ pub fn register_combat_core(
 pub fn tower_auto_attack_system(
     mut pending: ResMut<PendingDamage>,
     towers: Query<(Entity, &Position, Option<&Owner>, &Tower)>,
-    targets: Query<(Entity, &Position, Option<&Owner>, Option<&Drone>, Option<&Structure>)>,
+    targets: Query<(
+        Entity,
+        &Position,
+        Option<&Owner>,
+        Option<&Drone>,
+        Option<&Structure>,
+    )>,
     config: Res<CombatConfig>,
 ) {
     let mut queued = Vec::new();
@@ -342,31 +299,49 @@ pub fn damage_application_system(
             DamageType::Kinetic => entry.amount,
             _ => entry.amount,
         };
-        *damage_by_target.entry(entry.target).or_default() =
-            damage_by_target.get(&entry.target).copied().unwrap_or(0).saturating_add(reduced);
+        *damage_by_target.entry(entry.target).or_default() = damage_by_target
+            .get(&entry.target)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(reduced);
     }
 
     let mut heal_by_target: HashMap<Entity, u32> = HashMap::new();
     for entry in heal.entries.drain(..) {
-        *heal_by_target.entry(entry.target).or_default() =
-            heal_by_target.get(&entry.target).copied().unwrap_or(0).saturating_add(entry.amount);
+        *heal_by_target.entry(entry.target).or_default() = heal_by_target
+            .get(&entry.target)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(entry.amount);
     }
 
-    let mut targets: Vec<_> = damage_by_target.keys().chain(heal_by_target.keys()).copied().collect();
+    let mut targets: Vec<_> = damage_by_target
+        .keys()
+        .chain(heal_by_target.keys())
+        .copied()
+        .collect();
     targets.sort_by_key(|entity| entity.to_bits());
     targets.dedup();
     for target in targets {
         let damage = damage_by_target.get(&target).copied().unwrap_or(0);
         let heal = heal_by_target.get(&target).copied().unwrap_or(0);
         if let Ok(mut drone) = drones.get_mut(target) {
-            drone.hits = drone.hits.saturating_sub(damage).saturating_add(heal).min(drone.hits_max);
+            drone.hits = drone
+                .hits
+                .saturating_sub(damage)
+                .saturating_add(heal)
+                .min(drone.hits_max);
             if drone.hits == 0 {
-                commands.entity(target).insert(DeathMarker);
+                commands.entity(target).insert(DeathMark);
             }
         } else if let Ok(mut structure) = structures.get_mut(target) {
-            structure.hits = structure.hits.saturating_sub(damage).saturating_add(heal).min(structure.hits_max);
+            structure.hits = structure
+                .hits
+                .saturating_sub(damage)
+                .saturating_add(heal)
+                .min(structure.hits_max);
             if structure.hits == 0 {
-                commands.entity(target).insert(DeathMarker);
+                commands.entity(target).insert(DeathMark);
             }
         }
     }
