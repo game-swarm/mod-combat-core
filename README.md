@@ -1,43 +1,34 @@
-# Swarm Mod: combat-core
+# combat-core
 
-Core combat systems — melee, ranged, healing, damage application, and death for Swarm
-int
-string
+战斗核心模组。管理所有 combat intent 的产生、归约和伤害应用。
 
-## Directory Structure
+## 职责
 
-```
-mods/combat-core/
-├── Cargo.toml        # Static Bevy Plugin crate
-├── mod.toml          # Mod metadata + configurable parameters
-├── src/lib.rs        # `impl Plugin` entry point
-└── README.md
-```
+- 注册 3 种基础 combat action handler（Attack, RangedAttack, Heal）到 ActionRegistry
+- [S11] `attack_system` — 近战攻击：读取 PendingDamage(Kinetic) → 按 body part 计算伤害 → 写入 damage intent
+- [S12] `ranged_attack_system` — 远程攻击：读取 PendingDamage(根据武器类型) → 射程/弹药检查 → 写入 damage intent
+- [S13] `heal_system` — 治疗：读取 PendingHeal → 按 HEAL body part 恢复 HP
+- [S14] `special_attack_reducer` — 从 action handler status intent buffer 读取 → merge → resolve sort → 交付 S22
+- [S15] `damage_application_system` — 统一将 damage intent 写入 Entity.hits（含抗性计算）
+- Tower 自动攻击：读取 Tower 配置 → 射程内敌方 → 生成 PendingDamage
+- 注册伤害类型：Kinetic, Thermal, EMP, Sonic, Corrosive, Psionic
+- 注册 body part：ATTACK(伤害), RANGED_ATTACK(远程), HEAL(治疗), TOUGH(减伤)
 
-## Configuration
+## 依赖
 
-See `mod.toml` for all configurable parameters. Server operators can override via:
+- bevy
 
-```bash
-swarm mod config combat-core <key> <value>
-```
+## 配置
 
-Or in `world.toml`:
-
+world.toml:
 ```toml
-[mods.combat-core.config]
-# key = value
+[combat]
+pvp_enabled = true
+friendly_fire = false
+damage_multiplier_bp = 10000
 ```
 
-## Engine API
+## 事件
 
-Mods are statically compiled Bevy Plugin crates. Enable this mod with the
-`mod_combat_core` Cargo feature, or with `vanilla_mods`.
-
-## Publishing
-
-```bash
-git tag v0.1.0
-git push --tags
-swarm mod pack
-```
+读取: `PendingDamage`, `PendingHeal`, `ActionRegistry`, `DamageType`
+写入: `Entity.hits`, `StatusState`
