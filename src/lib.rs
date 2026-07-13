@@ -112,6 +112,15 @@ pub struct StatusIntent {
     pub amount: u32,
 }
 
+type TowerQueryItem<'w> = (Entity, &'w Position, Option<&'w Owner>, &'w Tower);
+type TargetQueryItem<'w> = (
+    Entity,
+    &'w Position,
+    Option<&'w Owner>,
+    Option<&'w Drone>,
+    Option<&'w Structure>,
+);
+
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ResolvedStatusIntents {
     pub entries: Vec<ResolvedStatusIntent>,
@@ -182,14 +191,8 @@ pub fn register_combat_core(
 
 pub fn tower_auto_attack_system(
     mut pending: ResMut<PendingDamage>,
-    towers: Query<(Entity, &Position, Option<&Owner>, &Tower)>,
-    targets: Query<(
-        Entity,
-        &Position,
-        Option<&Owner>,
-        Option<&Drone>,
-        Option<&Structure>,
-    )>,
+    towers: Query<TowerQueryItem<'_>>,
+    targets: Query<TargetQueryItem<'_>>,
     config: Res<CombatConfig>,
 ) {
     let mut queued = Vec::new();
@@ -360,4 +363,24 @@ fn can_damage(source: Option<PlayerId>, target: Option<PlayerId>, config: &Comba
 
 fn scale(amount: u32, multiplier_bp: u32) -> u32 {
     ((amount as u64 * multiplier_bp as u64) / 10_000).min(u32::MAX as u64) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_applies_basis_point_multiplier() {
+        assert_eq!(scale(200, 5_000), 100);
+        assert_eq!(scale(200, 10_000), 200);
+        assert_eq!(scale(200, 15_000), 300);
+    }
+
+    #[test]
+    fn combat_config_blocks_friendly_fire_by_default() {
+        let config = CombatConfig::default();
+
+        assert!(can_damage(Some(1), Some(2), &config));
+        assert!(!can_damage(Some(1), Some(1), &config));
+    }
 }
