@@ -35,7 +35,7 @@ damage_multiplier_bp = 10000
 
 ## Standalone Development
 
-This repository is consumable as an independent Cargo crate. It pins `swarm-engine` from `https://github.com/game-swarm/engine.git` at rev `4f9776302d0784e78bc5f04c7e38e28cc6d4c633`; no sibling checkout layout is required.
+This repository is consumable as an independent Cargo crate. It pins `swarm-engine` from `https://github.com/game-swarm/engine.git` at rev `fc1286401cdea0e6e4a4e3aef931e50b35dcc6e0`; no sibling checkout layout is required.
 
 ```sh
 cargo check
