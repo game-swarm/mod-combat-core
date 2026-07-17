@@ -20,12 +20,20 @@
 
 ## 配置
 
-world.toml:
+引擎的 `world.toml [combat]` 与模组的 lock-file 配置是两条独立路径：前者属于全局 `WorldConfig`，后者来自 `engine/mods.lock`。
+
+**有效运行配置 (Effective)**:
+- `engine/mods.lock` 中 `plugins.combat-core.config.damage_multiplier`: 由 `engine/src/main.rs` 读取并注入模组 `CombatConfig`（bp）。
+- `world.toml [combat]`: `pvp_enabled`、`friendly_fire` 和 `damage_multiplier` 由引擎 `WorldConfig` 解析，不是 `PluginEntry.config` 注入。
+
+**元数据/默认配置 (Metadata/Default)**:
+- 其他 `CombatConfig` 字段目前仍使用 Rust 代码默认值。
+
+`engine/mods.lock` 示例：
 ```toml
-[combat]
-pvp_enabled = true
-friendly_fire = false
-damage_multiplier_bp = 10000
+[plugins.combat-core]
+enabled = true
+config = { damage_multiplier = 10000 }
 ```
 
 ## 事件

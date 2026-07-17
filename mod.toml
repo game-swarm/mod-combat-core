@@ -5,12 +5,9 @@ description = "Core combat systems — melee, ranged, healing, damage applicatio
 author = "Swarm Team"
 
 [dependencies]
-empire-upkeep = ">=0.1.0"
-fog-of-war = ">=0.1.0"
 
 [config]
-damage_multiplier = { type = "int", default = 100, description = "Global damage multiplier in bp (10000 = 100%)" }
-body_part_types = { type = "string", default = "core,movement,attack", description = "Comma-separated body part type names" }
+damage_multiplier = { type = "fixed_bp", default = 10000, description = "Global damage multiplier in fixed basis points (10000 = 100%)" }
 
 [compatibility]
 engine_abi_min = "1.0"
