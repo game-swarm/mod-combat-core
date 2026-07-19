@@ -1,8 +1,15 @@
 use bevy::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use swarm_engine::components::{
-    BodyPart, DamageType, DeathMark, Drone, Owner, PlayerId, Position, Structure,
+use swarm_engine_api::prelude::{
+    API_VERSION, ActionDescriptor, BodyPart, ConfigFieldDescriptor, ConfigValueType,
+    DESCRIPTOR_SCHEMA_VERSION, DamageType, PlayerId, PluginDescriptor, SystemDescriptor, TickPhase,
 };
+use swarm_engine_plugin_sdk::prelude::{
+    ActionRegistrationError, ActionRegistry, DamageIntent, DamageIntentBuffer, DeathMark, Drone,
+    HealIntent, HealIntentBuffer, Owner, PendingDamage, PendingHeal, PendingSpecialAttack,
+    Position, SpecialAttackKind, Structure,
+};
+use swarm_engine_plugin_sdk::traits::SwarmPlugin;
 
 #[derive(Component, Debug, Clone)]
 pub struct Tower {
@@ -29,87 +36,9 @@ impl Default for CombatConfig {
 }
 
 #[derive(Resource, Debug, Clone, Default)]
-pub struct ActionRegistry {
-    pub handlers: BTreeSet<&'static str>,
-}
-
-#[derive(Resource, Debug, Clone, Default)]
 pub struct CombatRegistry {
     pub damage_types: HashSet<DamageType>,
     pub body_parts: HashSet<BodyPart>,
-}
-
-#[derive(Resource, Debug, Clone, Default)]
-pub struct PendingDamage {
-    pub entries: Vec<PendingDamageEntry>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingDamageEntry {
-    pub source: Option<Entity>,
-    pub target: Entity,
-    pub amount: u32,
-    pub damage_type: DamageType,
-}
-
-#[derive(Resource, Debug, Clone, Default)]
-pub struct PendingHeal {
-    pub entries: Vec<PendingHealEntry>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingHealEntry {
-    pub source: Option<Entity>,
-    pub target: Entity,
-    pub amount: u32,
-}
-
-#[derive(Resource, Debug, Clone, Default)]
-pub struct DamageIntentBuffer {
-    pub entries: Vec<DamageIntent>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DamageIntent {
-    pub target: Entity,
-    pub amount: u32,
-    pub damage_type: DamageType,
-}
-
-#[derive(Resource, Debug, Clone, Default)]
-pub struct HealIntentBuffer {
-    pub entries: Vec<HealIntent>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HealIntent {
-    pub target: Entity,
-    pub amount: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SpecialAttackKind {
-    Fortify = 1,
-    Leech = 2,
-    Fabricate = 3,
-    Disrupt = 4,
-    Debilitate = 5,
-    Overload = 6,
-    Drain = 7,
-    Hack = 8,
-}
-
-#[derive(Resource, Debug, Clone, Default)]
-pub struct StatusIntentBuffer {
-    pub entries: Vec<StatusIntent>,
-}
-
-#[derive(Debug, Clone)]
-pub struct StatusIntent {
-    pub kind: SpecialAttackKind,
-    pub source: Entity,
-    pub target: Entity,
-    pub amount: u32,
 }
 
 type TowerQueryItem<'w> = (Entity, &'w Position, Option<&'w Owner>, &'w Tower);
@@ -150,7 +79,7 @@ impl Plugin for CombatCoreModPlugin {
             .init_resource::<PendingHeal>()
             .init_resource::<DamageIntentBuffer>()
             .init_resource::<HealIntentBuffer>()
-            .init_resource::<StatusIntentBuffer>()
+            .init_resource::<PendingSpecialAttack>()
             .init_resource::<ResolvedStatusIntents>()
             .add_systems(Startup, register_combat_core)
             .add_systems(
@@ -168,11 +97,168 @@ impl Plugin for CombatCoreModPlugin {
     }
 }
 
+impl SwarmPlugin for CombatCoreModPlugin {
+    fn descriptor() -> PluginDescriptor {
+        let system = |system_id: &str,
+                      phase,
+                      order,
+                      reads: &[&str],
+                      writes: &[&str],
+                      produces_buffers: &[&str],
+                      consumes_buffers: &[&str]| SystemDescriptor {
+            system_id: format!("combat-core.{system_id}"),
+            version: "0.1.0".to_string(),
+            phase,
+            order,
+            reads: reads.iter().map(|value| (*value).to_string()).collect(),
+            writes: writes.iter().map(|value| (*value).to_string()).collect(),
+            produces_buffers: produces_buffers
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            consumes_buffers: consumes_buffers
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            deterministic_iteration: vec!["Entity".to_string()],
+        };
+
+        PluginDescriptor {
+            id: "combat-core".to_string(),
+            version: "0.1.0".to_string(),
+            api_version: API_VERSION.to_string(),
+            dependencies: Vec::new(),
+            config: vec![ConfigFieldDescriptor {
+                key: "damage_multiplier".to_string(),
+                value_type: ConfigValueType::FixedBasisPoints,
+                default: 10_000_u32.into(),
+                required: false,
+                validator: None,
+            }],
+            systems: vec![
+                system(
+                    "register",
+                    TickPhase::Startup,
+                    0,
+                    &[],
+                    &["ActionRegistry", "CombatRegistry"],
+                    &[],
+                    &[],
+                ),
+                system(
+                    "tower-auto-attack",
+                    TickPhase::Update,
+                    0,
+                    &[
+                        "Tower",
+                        "Position",
+                        "Owner",
+                        "Drone",
+                        "Structure",
+                        "CombatConfig",
+                    ],
+                    &["PendingDamage"],
+                    &["PendingDamage"],
+                    &[],
+                ),
+                system(
+                    "attack",
+                    TickPhase::Update,
+                    1,
+                    &["PendingDamage", "CombatConfig"],
+                    &["PendingDamage", "DamageIntentBuffer"],
+                    &["DamageIntentBuffer"],
+                    &["PendingDamage"],
+                ),
+                system(
+                    "ranged-attack",
+                    TickPhase::Update,
+                    2,
+                    &["PendingDamage", "CombatConfig"],
+                    &["PendingDamage", "DamageIntentBuffer"],
+                    &["DamageIntentBuffer"],
+                    &["PendingDamage"],
+                ),
+                system(
+                    "heal",
+                    TickPhase::Update,
+                    3,
+                    &["PendingHeal"],
+                    &["PendingHeal", "HealIntentBuffer"],
+                    &["HealIntentBuffer"],
+                    &["PendingHeal"],
+                ),
+                system(
+                    "special-attack-reducer",
+                    TickPhase::Update,
+                    4,
+                    &["PendingSpecialAttack"],
+                    &["PendingSpecialAttack", "ResolvedStatusIntents"],
+                    &["ResolvedStatusIntents"],
+                    &["PendingSpecialAttack"],
+                ),
+                system(
+                    "damage-application",
+                    TickPhase::Update,
+                    5,
+                    &[
+                        "DamageIntentBuffer",
+                        "HealIntentBuffer",
+                        "Drone",
+                        "Structure",
+                    ],
+                    &[
+                        "DamageIntentBuffer",
+                        "HealIntentBuffer",
+                        "Drone",
+                        "Structure",
+                        "DeathMark",
+                    ],
+                    &[],
+                    &["DamageIntentBuffer", "HealIntentBuffer"],
+                ),
+            ],
+            actions: [
+                ("Attack", "attack"),
+                ("RangedAttack", "ranged_attack"),
+                ("Heal", "heal"),
+            ]
+            .into_iter()
+            .map(|(action_type, handler)| ActionDescriptor {
+                action_type: action_type.to_string(),
+                handler: handler.to_string(),
+                payload_schema: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false
+                }),
+                command_phase: TickPhase::Command,
+                output_buffer: Some(
+                    match action_type {
+                        "Heal" => "PendingHeal",
+                        _ => "PendingDamage",
+                    }
+                    .to_string(),
+                ),
+            })
+            .collect(),
+            descriptor_schema_version: DESCRIPTOR_SCHEMA_VERSION.to_string(),
+        }
+    }
+}
+
 pub fn register_combat_core(
     mut actions: ResMut<ActionRegistry>,
     mut registry: ResMut<CombatRegistry>,
 ) {
-    actions.handlers.extend(["Attack", "RangedAttack", "Heal"]);
+    for (action_type, handler) in [
+        ("Attack", "attack"),
+        ("RangedAttack", "ranged_attack"),
+        ("Heal", "heal"),
+    ] {
+        actions
+            .register(action_type, handler)
+            .unwrap_or_else(|error: ActionRegistrationError| panic!("{error}"));
+    }
     registry.damage_types.extend([
         DamageType::Kinetic,
         DamageType::Thermal,
@@ -212,15 +298,12 @@ pub fn tower_auto_attack_system(
             .collect();
         candidates.sort_by_key(|(distance, entity)| (*distance, entity.to_bits()));
         if let Some((_, target)) = candidates.first() {
-            queued.push(PendingDamageEntry {
-                source: Some(tower_entity),
-                target: *target,
-                amount: tower.damage,
-                damage_type: tower.damage_type,
-            });
+            queued.push((*target, tower.damage, tower.damage_type));
         }
     }
-    pending.entries.extend(queued);
+    for (target, amount, damage_type) in queued {
+        pending.push(target, amount, damage_type.as_str());
+    }
 }
 
 pub fn attack_system(
@@ -230,11 +313,12 @@ pub fn attack_system(
 ) {
     let entries = std::mem::take(&mut pending.entries);
     for entry in entries {
-        if matches!(entry.damage_type, DamageType::Kinetic) {
-            intents.entries.push(DamageIntent {
-                target: entry.target,
+        if entry.damage_type == DamageType::Kinetic.as_str() {
+            intents.0.push(DamageIntent {
+                source: 0,
+                target: entry.target.to_bits(),
                 amount: scale(entry.amount, config.damage_multiplier_bp),
-                damage_type: entry.damage_type,
+                damage_type: DamageType::Kinetic,
             });
         } else {
             pending.entries.push(entry);
@@ -249,28 +333,34 @@ pub fn ranged_attack_system(
 ) {
     let entries = std::mem::take(&mut pending.entries);
     for entry in entries {
-        intents.entries.push(DamageIntent {
-            target: entry.target,
-            amount: scale(entry.amount, config.damage_multiplier_bp),
-            damage_type: entry.damage_type,
-        });
+        if let Some(damage_type) = damage_type_from_name(&entry.damage_type) {
+            intents.0.push(DamageIntent {
+                source: 0,
+                target: entry.target.to_bits(),
+                amount: scale(entry.amount, config.damage_multiplier_bp),
+                damage_type,
+            });
+        } else {
+            pending.entries.push(entry);
+        }
     }
 }
 
 pub fn heal_system(mut pending: ResMut<PendingHeal>, mut intents: ResMut<HealIntentBuffer>) {
     intents
-        .entries
+        .0
         .extend(pending.entries.drain(..).map(|entry| HealIntent {
-            target: entry.target,
+            source: 0,
+            target: entry.target.to_bits(),
             amount: entry.amount,
         }));
 }
 
 pub fn special_attack_reducer(
-    mut input: ResMut<StatusIntentBuffer>,
+    mut input: ResMut<PendingSpecialAttack>,
     mut output: ResMut<ResolvedStatusIntents>,
 ) {
-    let mut raw = std::mem::take(&mut input.entries);
+    let mut raw = std::mem::take(&mut input.intents);
     raw.sort_by(|a, b| {
         b.kind
             .cmp(&a.kind)
@@ -297,22 +387,24 @@ pub fn damage_application_system(
     mut structures: Query<&mut Structure, Without<Drone>>,
 ) {
     let mut damage_by_target: HashMap<Entity, u32> = HashMap::new();
-    for entry in damage.entries.drain(..) {
+    for entry in damage.0.drain(..) {
+        let target = Entity::from_bits(entry.target);
         let reduced = match entry.damage_type {
             DamageType::Kinetic => entry.amount,
             _ => entry.amount,
         };
-        *damage_by_target.entry(entry.target).or_default() = damage_by_target
-            .get(&entry.target)
+        *damage_by_target.entry(target).or_default() = damage_by_target
+            .get(&target)
             .copied()
             .unwrap_or(0)
             .saturating_add(reduced);
     }
 
     let mut heal_by_target: HashMap<Entity, u32> = HashMap::new();
-    for entry in heal.entries.drain(..) {
-        *heal_by_target.entry(entry.target).or_default() = heal_by_target
-            .get(&entry.target)
+    for entry in heal.0.drain(..) {
+        let target = Entity::from_bits(entry.target);
+        *heal_by_target.entry(target).or_default() = heal_by_target
+            .get(&target)
             .copied()
             .unwrap_or(0)
             .saturating_add(entry.amount);
@@ -361,6 +453,19 @@ fn can_damage(source: Option<PlayerId>, target: Option<PlayerId>, config: &Comba
     source != target || config.friendly_fire
 }
 
+fn damage_type_from_name(name: &str) -> Option<DamageType> {
+    [
+        DamageType::Kinetic,
+        DamageType::Thermal,
+        DamageType::EMP,
+        DamageType::Sonic,
+        DamageType::Corrosive,
+        DamageType::Psionic,
+    ]
+    .into_iter()
+    .find(|damage_type| damage_type.as_str() == name)
+}
+
 fn scale(amount: u32, multiplier_bp: u32) -> u32 {
     ((amount as u64 * multiplier_bp as u64) / 10_000).min(u32::MAX as u64) as u32
 }
@@ -382,5 +487,114 @@ mod tests {
 
         assert!(can_damage(Some(1), Some(2), &config));
         assert!(!can_damage(Some(1), Some(1), &config));
+    }
+
+    #[test]
+    fn descriptor_is_valid_and_identifies_combat_core() {
+        let descriptor = CombatCoreModPlugin::descriptor();
+        swarm_engine_api::validation::assert_valid_descriptor(&descriptor);
+        assert_eq!(descriptor.id, "combat-core");
+        assert_eq!(descriptor.version, "0.1.0");
+        assert!(descriptor.dependencies.is_empty());
+        assert_eq!(descriptor.systems.len(), 7);
+        assert!(
+            descriptor
+                .systems
+                .iter()
+                .any(|system| system.system_id == "combat-core.damage-application")
+        );
+    }
+
+    #[test]
+    fn plugin_uses_engine_canonical_resources_and_buffers() {
+        use std::any::TypeId;
+
+        assert_eq!(
+            TypeId::of::<ActionRegistry>(),
+            TypeId::of::<swarm_engine_plugin_sdk::resources::ActionRegistry>()
+        );
+        assert_eq!(
+            TypeId::of::<PendingDamage>(),
+            TypeId::of::<swarm_engine_plugin_sdk::buffers::PendingDamage>()
+        );
+        assert_eq!(
+            TypeId::of::<DamageIntentBuffer>(),
+            TypeId::of::<swarm_engine_plugin_sdk::buffers::DamageIntentBuffer>()
+        );
+        assert_eq!(
+            TypeId::of::<PendingSpecialAttack>(),
+            TypeId::of::<swarm_engine_plugin_sdk::buffers::PendingSpecialAttack>()
+        );
+
+        let mut app = App::new();
+        let target = app
+            .world_mut()
+            .spawn(Drone {
+                owner: 7,
+                body: Vec::new(),
+                carry: Default::default(),
+                carry_capacity: 0,
+                fatigue: 0,
+                hits: 100,
+                hits_max: 100,
+                spawning: false,
+                age: 0,
+                last_action_tick: 0,
+                lifespan: 100,
+            })
+            .id();
+
+        let mut actions = ActionRegistry::default();
+        actions.register("EngineAction", "engine_action").unwrap();
+        let mut pending_damage = PendingDamage::default();
+        pending_damage.push(target, 5, DamageType::Kinetic.as_str());
+        let mut pending_heal = PendingHeal::default();
+        pending_heal.push(target, 2);
+        let pending_special = PendingSpecialAttack {
+            intents: vec![swarm_engine_plugin_sdk::prelude::StatusActionIntent {
+                kind: SpecialAttackKind::Hack,
+                source: target,
+                target,
+                owner: 7,
+                amount: 4,
+            }],
+        };
+
+        app.insert_resource(actions)
+            .insert_resource(pending_damage)
+            .insert_resource(pending_heal)
+            .insert_resource(pending_special)
+            .insert_resource(DamageIntentBuffer(vec![DamageIntent {
+                source: 99,
+                target: target.to_bits(),
+                amount: 10,
+                damage_type: DamageType::Thermal,
+            }]))
+            .insert_resource(HealIntentBuffer(vec![HealIntent {
+                source: 99,
+                target: target.to_bits(),
+                amount: 3,
+            }]))
+            .add_plugins(CombatCoreModPlugin);
+
+        app.update();
+
+        let world = app.world();
+        let actions = world.resource::<ActionRegistry>();
+        assert_eq!(
+            actions.handlers.get("EngineAction").map(String::as_str),
+            Some("engine_action")
+        );
+        assert_eq!(
+            actions.handlers.get("Attack").map(String::as_str),
+            Some("attack")
+        );
+        assert!(world.resource::<PendingDamage>().entries.is_empty());
+        assert!(world.resource::<PendingHeal>().entries.is_empty());
+        assert!(world.resource::<DamageIntentBuffer>().0.is_empty());
+        assert!(world.resource::<HealIntentBuffer>().0.is_empty());
+        assert!(world.resource::<PendingSpecialAttack>().intents.is_empty());
+        assert_eq!(world.get::<Drone>(target).unwrap().hits, 90);
+        assert_eq!(world.resource::<ResolvedStatusIntents>().entries.len(), 1);
     }
 }
