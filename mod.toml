@@ -8,6 +8,8 @@ author = "Swarm Team"
 
 [config]
 damage_multiplier = { type = "fixed_bp", default = 10000, description = "Global damage multiplier in fixed basis points (10000 = 100%)" }
+repair_hp_per_work_part = { type = "u32", default = 5, description = "Repair HP accepted per active Work body part" }
+repair_energy_per_hp = { type = "u32", default = 1, description = "Energy cost per repaired HP" }
 
 [compatibility]
 engine_abi_min = "1.0"

@@ -128,13 +128,29 @@ impl SwarmPlugin for CombatCoreModPlugin {
             version: "0.1.0".to_string(),
             api_version: API_VERSION.to_string(),
             dependencies: Vec::new(),
-            config: vec![ConfigFieldDescriptor {
-                key: "damage_multiplier".to_string(),
-                value_type: ConfigValueType::FixedBasisPoints,
-                default: 10_000_u32.into(),
-                required: false,
-                validator: None,
-            }],
+            config: vec![
+                ConfigFieldDescriptor {
+                    key: "damage_multiplier".to_string(),
+                    value_type: ConfigValueType::FixedBasisPoints,
+                    default: 10_000_u32.into(),
+                    required: false,
+                    validator: None,
+                },
+                ConfigFieldDescriptor {
+                    key: "repair_hp_per_work_part".to_string(),
+                    value_type: ConfigValueType::U32,
+                    default: 5_u32.into(),
+                    required: false,
+                    validator: None,
+                },
+                ConfigFieldDescriptor {
+                    key: "repair_energy_per_hp".to_string(),
+                    value_type: ConfigValueType::U32,
+                    default: 1_u32.into(),
+                    required: false,
+                    validator: None,
+                },
+            ],
             systems: vec![
                 system(
                     "register",
@@ -496,6 +512,18 @@ mod tests {
         assert_eq!(descriptor.id, "combat-core");
         assert_eq!(descriptor.version, "0.1.0");
         assert!(descriptor.dependencies.is_empty());
+        assert_eq!(
+            descriptor
+                .config
+                .iter()
+                .map(|field| (field.key.as_str(), field.default.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("damage_multiplier", 10_000_u32.into()),
+                ("repair_hp_per_work_part", 5_u32.into()),
+                ("repair_energy_per_hp", 1_u32.into()),
+            ]
+        );
         assert_eq!(descriptor.systems.len(), 7);
         assert!(
             descriptor
